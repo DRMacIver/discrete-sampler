@@ -33,7 +33,7 @@ FINISH = """
 """[1:]
 
 
-simple_floats = st.integers().map(float)
+simple_floats = st.integers(0, 1000).map(float)
 
 
 @settings(timeout=-1)
@@ -65,6 +65,7 @@ def test_always_runs_validly(data):
 
         for n, i in draws:
             name = "weights%d" % (i,)
+            w = weights[i]
             if n == 1:
                 o.write("    do_sample(family, %d, %s);" % (
                     len(w), name))
@@ -99,7 +100,7 @@ def test_always_runs_validly(data):
                 if not trivial:
                     assert w[results[counter]] != 0
                 counter += 1
-    except Exception: 
+    except Exception:
         with open("test.c") as i:
             data = i.read()
         with open("failing-test.c", "w") as o:
@@ -109,7 +110,7 @@ def test_always_runs_validly(data):
 if __name__ == '__main__':
     try:
         test_always_runs_validly()
-    except Exception: 
+    except Exception:
         i = 1
         while True:
             fname = "tests/corpus/test%d.c" % (i,)
