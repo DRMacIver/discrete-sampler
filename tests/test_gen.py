@@ -36,22 +36,9 @@ FINISH = """
 simple_floats = st.integers(0, 1000).map(float)
 
 
-@settings(timeout=-1)
-@given(st.data())
-def test_always_runs_validly(data):
-    with open('test.c', 'w') as o:
-
-        capacity = data.draw(st.integers(1, 2 ** 10))
-        seed = data.draw(st.integers(0, 2 ** 64 - 1))
-
+def write_file(fn, capacity, seed, weights, draws):
+    with open(fn, 'w') as o:
         o.write(PREAMBLE % (capacity, seed))
-
-        weights = data.draw(
-            st.lists(st.lists(simple_floats, min_size=1), min_size=1))
-
-        draws = data.draw(st.lists(
-            st.tuples(st.integers(1, 1000), st.integers(0, len(weights) - 1))))
-
         used = {i for _, i in draws}
 
         for i, w in enumerate(weights):
@@ -77,20 +64,41 @@ def test_always_runs_validly(data):
             o.write('\n')
         o.write(FINISH)
 
+
+def run_file(fn):
+    subprocess.check_call((
+        "gcc -Wall -Werror --std=c99 -O2 %s "
+        "src/discretesampler/sampler.c -lm -otest") % (fn,),
+        shell=True, env=os.environ)
+
+    results = subprocess.check_output("./test", shell=True, env=os.environ)
+
+    return [
+        int(l.strip().decode('ascii')) for l in results.split(b'\n')
+        if l.strip()
+    ]
+
+
+@settings(timeout=-1, max_examples=10**6, max_iterations=10**6)
+@given(st.data())
+def test_always_runs_validly(data):
+    capacity = data.draw(st.integers(1, 128))
+    seed = data.draw(st.integers(0, 2 ** 64 - 1))
+    weights = data.draw(
+        st.lists(
+            st.lists(simple_floats, min_size=1),
+            min_size=1, average_size=20))
+    draws = data.draw(st.lists(
+        st.tuples(st.integers(1, 1000), st.integers(0, len(weights) - 1)),
+        average_size=20
+    ))
+    write_file('test.c', capacity, seed, weights, draws)
+    write_file('test2.c', 0, seed, weights, draws)
+
     try:
-        subprocess.check_call((
-            "gcc -Wall -Werror --std=c99 -O2 test.c "
-            "src/discretesampler/sampler.c -lm -otest"),
-            shell=True, env=os.environ)
-
-        results = subprocess.check_output("./test", shell=True, env=os.environ)
-
-        results = [
-            int(l.strip().decode('ascii')) for l in results.split(b'\n')
-            if l.strip()
-        ]
-
+        results = run_file('test.c')
         assert len(results) == sum(n for n, _ in draws)
+        assert results == run_file('test2.c')
 
         counter = 0
         for n, i in draws:
