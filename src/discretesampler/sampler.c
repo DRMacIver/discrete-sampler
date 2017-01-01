@@ -74,18 +74,27 @@ static void random_sampler_initialize(random_sampler *result, size_t n_items, do
   double min = INFINITY;
   double max = -INFINITY;
   double total = 0.0;
+  bool all_bad = true;
 
   for(size_t i = 0; i < n_items; i++){
     double x = weights[i];
-    if(x < min) min = x;
-    if(x > max) max = x;
-    total += x;
+    if(x > 0){
+      all_bad = false;
+      if(x < min) min = x;
+      if(x > max) max = x;
+      total += x;
+    }
   }
   result->total = total;
 
-  if((min == max) || (total <= 0) || isnan(total)){
+  if((min == max) || all_bad || isnan(total)){
     result->uniform = true;
-    result->table_size = result->n_items;
+    result->table_size = 0;
+    for(size_t i = 0; i < n_items; i++){
+      if(weights[i] > 0){
+        result->alias_table[result->table_size++] = i;
+      }
+    }
   } else {
     assert(n_items > 1);
     result->uniform = false;
@@ -133,7 +142,7 @@ size_t random_sampler_sample(random_sampler *sampler, struct mt *mt){
     for(uint8_t t = 0; t < 64; t += sampler->n_bits_needed){
         i = probe & sampler->item_mask;
         if(i < sampler->table_size){
-          if(sampler->uniform) return i;
+          if(sampler->uniform) return sampler->alias_table[i];
 
           size_t result = sampler->alias_table[i];
           assert(result < sampler->n_items);
