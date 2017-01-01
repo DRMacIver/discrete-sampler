@@ -14,14 +14,22 @@ struct mt {
     int16_t mti;
 };
 
+typedef enum {
+    UNIFORM=0,
+    DEGENERATE=1,
+    FULL=2
+} sampler_type;
+
 
 typedef struct {
   size_t capacity;
   size_t n_items;
+  size_t n_viable_items;
   size_t item_mask;
   uint8_t n_bits_needed;
-  bool uniform;
+  sampler_type type;
   double total;
+  double max;
   double *weights;
 
   size_t table_size;
@@ -65,6 +73,39 @@ static random_sampler *random_sampler_create(size_t capacity){
   return result;
 }
 
+
+static void init_mask(random_sampler *result){
+  size_t mask = result->table_size;
+  mask |= (mask >> 1);
+  mask |= (mask >> 2);
+  mask |= (mask >> 4);
+  mask |= (mask >> 8);
+  mask |= (mask >> 16);
+  mask |= (mask >> 32);
+  result->item_mask = mask;
+  result->n_bits_needed = highest_set_bit(mask);
+}
+
+static void init_full_table(random_sampler *result){
+  assert(result->n_viable_items > 1);
+  assert(result->n_viable_items == result->table_size);
+
+  result->type = FULL;
+
+  result->table_size = 0;
+
+  for(size_t i = 0; i < result->n_items; i++){
+    if(result->weights[i] / result->total <= 0) continue;
+    double w = floor(result->n_viable_items * result->weights[i] / result->total) + 1;
+    for(int j = 0; j < w; j++){
+        result->alias_table[result->table_size++] = i;
+        assert(result->table_size <= 2 * result->n_viable_items);
+    }
+  }
+  init_mask(result);
+}
+
+
 static void random_sampler_initialize(random_sampler *result, size_t n_items, double *weights){
   assert(n_items <= result->capacity);
 
@@ -75,52 +116,31 @@ static void random_sampler_initialize(random_sampler *result, size_t n_items, do
   double max = -INFINITY;
   double total = 0.0;
   bool all_bad = true;
+  result->table_size = 0;
+  result->n_viable_items = 0;
 
   for(size_t i = 0; i < n_items; i++){
     double x = weights[i];
     if(x > 0){
+      result->alias_table[result->table_size++] = i;
+      result->n_viable_items++;
       all_bad = false;
       if(x < min) min = x;
       if(x > max) max = x;
       total += x;
     }
   }
-  result->total = total;
+  init_mask(result);
 
-  if((min == max) || all_bad || isnan(total)){
-    result->uniform = true;
-    result->table_size = 0;
-    for(size_t i = 0; i < n_items; i++){
-      if(weights[i] > 0){
-        result->alias_table[result->table_size++] = i;
-      }
-    }
-  } else {
-    assert(n_items > 1);
-    result->uniform = false;
-
-    result->table_size = 0;
-
-    for(size_t i = 0; i < n_items; i++){
-      if(weights[i] / total <= 0) continue;
-      double w = floor(n_items * weights[i] / total) + 1;
-      for(int j = 0; j < w; j++){
-          result->alias_table[result->table_size++] = i;
-          assert(result->table_size <= 2 * n_items);
-      }
-    }
+  if(all_bad || isnan(total)){
+    result->type = DEGENERATE;
+    return; 
   }
 
-  size_t mask = result->table_size;
-  mask |= (mask >> 1);
-  mask |= (mask >> 2);
-  mask |= (mask >> 4);
-  mask |= (mask >> 8);
-  mask |= (mask >> 16);
-  mask |= (mask >> 32);
-  result->item_mask = mask;
+  result->total = total;
+  result->max = max;
+  result->type = UNIFORM;
 
-  result->n_bits_needed = highest_set_bit(n_items);
 }
 
 random_sampler *random_sampler_new(size_t n_items, double *weights){
@@ -136,20 +156,36 @@ void random_sampler_free(random_sampler *sampler){
 static double mt_random_double(struct mt *mt);
 
 size_t random_sampler_sample(random_sampler *sampler, struct mt *mt){
+  assert(sampler->table_size > 0);
+  if(sampler->table_size == 1) return sampler->alias_table[0];
   size_t i = sampler->n_items;
   while(true){
     uint64_t probe = genrand64_int64(mt);
     for(uint8_t t = 0; t < 64; t += sampler->n_bits_needed){
         i = probe & sampler->item_mask;
         if(i < sampler->table_size){
-          if(sampler->uniform) return sampler->alias_table[i];
+          if(sampler->type == DEGENERATE) return i; 
+          if(sampler->type == UNIFORM){
+            size_t result = sampler->alias_table[i];
+            double w = sampler->weights[result];
+            assert(w > 0);
+            if(w < sampler->max){
+                if(mt_random_double(mt) <= w / sampler->max){
+                    return result;
+                } else {
+                    init_full_table(sampler);
+                }
+            } else {
+                return result;
+            }
+          }
 
           size_t result = sampler->alias_table[i];
           assert(result < sampler->n_items);
           if((i > 0) && (result == sampler->alias_table[i - 1])){ 
             return result;
           }
-          double q = sampler->n_items * sampler->weights[result] / sampler->total;
+          double q = sampler->n_viable_items * sampler->weights[result] / sampler->total;
           double threshold = 1.0 - (q - floor(q));
           assert(!isnan(threshold));
           if((threshold < 1.0) && (mt_random_double(mt) > threshold)){

@@ -28,6 +28,7 @@ int main(int argc, char **argv){
         }
         fflush(stdout);
         size_t i = sampler_family_sample(family, SIZE, weights);
+        assert(i < SIZE);
         assert(weights[i] > 0.0);
         accumulator += i;
      }
