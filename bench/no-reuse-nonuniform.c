@@ -13,7 +13,7 @@ size_t sampler_family_sample(void *samplers, size_t n_items, double *weights);
 
 
 int main(int argc, char **argv){
-    void *family = sampler_family_new(0, 2);
+    void *family = sampler_family_new(1, 2);
     size_t accumulator = 0;
 
     double weights[SIZE];
