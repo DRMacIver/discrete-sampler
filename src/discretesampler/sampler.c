@@ -283,6 +283,12 @@ static random_sampler *lookup_sampler(
 
 size_t sampler_family_sample(sampler_family *samplers, size_t n_items, double *weights){
     if(n_items <= 1) return 0;
+    if(samplers->capacity == 0){
+        random_sampler *sampler = random_sampler_new(n_items, weights);
+        size_t result = random_sampler_sample(sampler, &samplers->mersenne_twister);
+        random_sampler_free(sampler);
+        return result;
+    }
     random_sampler *sampler = lookup_sampler(samplers, n_items, weights);
     return random_sampler_sample(sampler, &(samplers->mersenne_twister));
 }
