@@ -281,7 +281,7 @@ static random_sampler *lookup_sampler(
         }
     }
 
-    uint64_t hash = hash_doubles(n_items, weights);
+    uint64_t hash = family->capacity > PROBE_MAX ? hash_doubles(n_items, weights) : 0;
 
     size_t probe = (hash % (uint64_t)family->capacity);
     size_t target = probe;
