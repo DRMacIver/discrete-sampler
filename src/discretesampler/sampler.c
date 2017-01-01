@@ -318,10 +318,23 @@ size_t sampler_family_sample(sampler_family *samplers, size_t n_items, double *w
         if(w > 0) samplers->buffer[fill++] = i; 
         if(w > max) max = w;
     }
-    size_t mask = right_fill(fill);
-    size_t n_bits_needed = highest_set_bit(mask);
 
     struct mt *mt = &samplers->mersenne_twister;
+
+
+    if(fill == 2){
+        size_t i = samplers->buffer[0];
+        size_t j = samplers->buffer[1];
+        assert(i < j);
+        if(mt_random_double(mt) <= weights[i] / (weights[i] + weights[j])){
+            return i;
+        } else { 
+            return j;
+        }
+    };
+
+    size_t mask = right_fill(fill);
+    size_t n_bits_needed = highest_set_bit(mask);
 
     int rejections = 0;
 
