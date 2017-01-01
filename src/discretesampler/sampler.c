@@ -14,12 +14,6 @@ struct mt {
     int16_t mti;
 };
 
-typedef enum {
-    UNIFORM=0,
-    DEGENERATE=1,
-    FULL=2
-} sampler_type;
-
 
 typedef struct {
   size_t capacity;
@@ -27,7 +21,6 @@ typedef struct {
   size_t n_viable_items;
   size_t item_mask;
   uint8_t n_bits_needed;
-  sampler_type type;
   double total;
   double max;
   double *weights;
@@ -74,14 +67,18 @@ static random_sampler *random_sampler_create(size_t capacity){
 }
 
 
-static void init_mask(random_sampler *result){
-  size_t mask = result->table_size;
+static size_t right_fill(size_t mask){
   mask |= (mask >> 1);
   mask |= (mask >> 2);
   mask |= (mask >> 4);
   mask |= (mask >> 8);
   mask |= (mask >> 16);
   mask |= (mask >> 32);
+  return mask;
+}
+
+static void init_mask(random_sampler *result){
+  size_t mask = right_fill(result->table_size);
   result->item_mask = mask;
   result->n_bits_needed = highest_set_bit(mask);
 }
@@ -89,8 +86,6 @@ static void init_mask(random_sampler *result){
 static void init_full_table(random_sampler *result){
   assert(result->n_viable_items > 1);
   assert(result->n_viable_items == result->table_size);
-
-  result->type = FULL;
 
   result->table_size = 0;
 
@@ -115,7 +110,6 @@ static void random_sampler_initialize(random_sampler *result, size_t n_items, do
   double min = INFINITY;
   double max = -INFINITY;
   double total = 0.0;
-  bool all_bad = true;
   result->table_size = 0;
   result->n_viable_items = 0;
 
@@ -124,23 +118,18 @@ static void random_sampler_initialize(random_sampler *result, size_t n_items, do
     if(x > 0){
       result->alias_table[result->table_size++] = i;
       result->n_viable_items++;
-      all_bad = false;
       if(x < min) min = x;
       if(x > max) max = x;
       total += x;
     }
   }
+
+  assert(min < max);
+  assert(max > 0);
+
   init_mask(result);
-
-  if(all_bad || isnan(total)){
-    result->type = DEGENERATE;
-    return; 
-  }
-
   result->total = total;
-  result->max = max;
-  result->type = UNIFORM;
-
+  init_full_table(result); 
 }
 
 random_sampler *random_sampler_new(size_t n_items, double *weights){
@@ -164,22 +153,6 @@ size_t random_sampler_sample(random_sampler *sampler, struct mt *mt){
     for(uint8_t t = 0; t < 64; t += sampler->n_bits_needed){
         i = probe & sampler->item_mask;
         if(i < sampler->table_size){
-          if(sampler->type == DEGENERATE) return i; 
-          if(sampler->type == UNIFORM){
-            size_t result = sampler->alias_table[i];
-            double w = sampler->weights[result];
-            assert(w > 0);
-            if(w < sampler->max){
-                if(mt_random_double(mt) <= w / sampler->max){
-                    return result;
-                } else {
-                    init_full_table(sampler);
-                }
-            } else {
-                return result;
-            }
-          }
-
           size_t result = sampler->alias_table[i];
           assert(result < sampler->n_items);
           if((i > 0) && (result == sampler->alias_table[i - 1])){ 
@@ -209,6 +182,9 @@ typedef struct {
 
 
 typedef struct {
+    size_t *buffer;
+    size_t buffer_capacity;
+
     size_t capacity;
     size_t max_items;
     sampler_entry *entries;
@@ -328,6 +304,54 @@ static random_sampler *lookup_sampler(
 
 size_t sampler_family_sample(sampler_family *samplers, size_t n_items, double *weights){
     if(n_items <= 1) return 0;
+
+    if(samplers->buffer_capacity < n_items){
+        free(samplers->buffer);
+        samplers->buffer_capacity = right_fill(n_items) + 1;
+        samplers->buffer = malloc(sizeof(size_t) * samplers->buffer_capacity);
+    }
+
+    double max = -INFINITY;
+    size_t fill = 0;
+    for(size_t i = 0; i < n_items; i++){
+        double w = weights[i];
+        if(w > 0) samplers->buffer[fill++] = i; 
+        if(w > max) max = w;
+    }
+    size_t mask = right_fill(fill);
+    size_t n_bits_needed = highest_set_bit(mask);
+
+    struct mt *mt = &samplers->mersenne_twister;
+
+    int rejections = 0;
+
+    while(true){
+      uint64_t probe = genrand64_int64(mt);
+      for(uint8_t t = 0; t < 64; t += n_bits_needed){
+        size_t i = probe & mask;
+        if(max <= 0){
+            if(i < n_items) return i;
+        } else if(i < fill){
+          size_t result = samplers->buffer[i];
+          double w = weights[result];
+          assert(w > 0);
+          if(w < max){
+              if(mt_random_double(mt) <= w / max){
+                  return result;
+              } else {
+                  rejections++;
+                  if(rejections > 1) goto fallback;
+              }
+          } else {
+              return result;
+          }
+        }
+        probe >>= n_bits_needed;
+      }
+    }
+
+    fallback:;
+
     if(samplers->capacity == 0){
         random_sampler *sampler = random_sampler_new(n_items, weights);
         size_t result = random_sampler_sample(sampler, &samplers->mersenne_twister);
